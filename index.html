@@ -240,12 +240,19 @@ let device = null, endpoints = {}, cipher = null;
    for a browser that cannot read the 0x2901 descriptions */
 const ENDPOINT_BY_UUID = { ff4f: "prov-ctrl", ff50: "prov-scan", ff51: "prov-session", ff52: "prov-config", ff53: "proto-ver" };
 
+/* a promise that gives up after ms: a Bluetooth call that never answers shows where it stopped */
+function timed(promise, ms, what) {
+  return Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(what + ": no answer in " + ms / 1000 + " s")), ms))]);
+}
+
 async function exchange(name, data) {
   const characteristic = endpoints[name];
   if (!characteristic) throw new Error("no endpoint " + name);
-  if (characteristic.writeValueWithResponse) await characteristic.writeValueWithResponse(data);
-  else await characteristic.writeValue(data);                 // older Web Bluetooth (some iOS browsers)
-  return new Uint8Array((await characteristic.readValue()).buffer);
+  const write = characteristic.writeValueWithResponse ? characteristic.writeValueWithResponse(data)
+                                                      : characteristic.writeValue(data);   // older Web Bluetooth
+  await timed(write, 8000, name + " write");
+  const value = await timed(characteristic.readValue(), 8000, name + " read");
+  return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
 }
 async function secure(name, plain) {                       // one encrypted request / answer
   const answer = await exchange(name, cipher.encrypt(plain));
@@ -262,23 +269,26 @@ async function connect() {
     setStep("connect");
   });
   status("connect-status", "연결하는 중...");
-  const server = await device.gatt.connect();
-  const service = await server.getPrimaryService(SERVICE);
+  const server = await timed(device.gatt.connect(), 15000, "connect");
+  log("gatt connected");
+  const service = await timed(server.getPrimaryService(SERVICE), 10000, "service");
+  const characteristics = await timed(service.getCharacteristics(), 10000, "characteristics");
+  log("characteristics:", characteristics.map((c) => c.uuid.slice(4, 8)).join(" "));
   endpoints = {};
-  for (const characteristic of await service.getCharacteristics()) {
-    try {
-      const description = await characteristic.getDescriptor("gatt.characteristic_user_description");
-      endpoints[untext.decode(await description.readValue())] = characteristic;
-    } catch (e) { log("descriptor", characteristic.uuid, e.message); }
+  for (const characteristic of characteristics) {           // by UUID: no descriptor reads (Bluefy hung on them)
+    const name = ENDPOINT_BY_UUID[characteristic.uuid.slice(4, 8)];
+    if (name) endpoints[name] = characteristic;
   }
-  if (!endpoints["prov-session"]) {                          // no descriptions: by UUID
-    for (const characteristic of await service.getCharacteristics()) {
-      const name = ENDPOINT_BY_UUID[characteristic.uuid.slice(4, 8)];
-      if (name) endpoints[name] = characteristic;
+  if (!endpoints["prov-session"]) {                          // another firmware: ask the descriptions
+    for (const characteristic of characteristics) {
+      try {
+        const description = await timed(characteristic.getDescriptor("gatt.characteristic_user_description"), 5000, "descriptor");
+        endpoints[untext.decode(await timed(description.readValue(), 5000, "description"))] = characteristic;
+      } catch (e) { log("descriptor", characteristic.uuid, e.message); }
     }
   }
   log("endpoints:", Object.keys(endpoints).join(", "));
-  try { log("proto-ver:", untext.decode(await exchange("proto-ver", text.encode("---")))); } catch (e) { }
+  try { log("proto-ver:", untext.decode(await exchange("proto-ver", text.encode("---")))); } catch (e) { log("proto-ver:", e.message); }
 
   status("connect-status", "보안 연결을 만드는 중...");
   const secret = nacl.randomBytes(32), clientKey = nacl.scalarMult.base(secret);
@@ -394,7 +404,7 @@ $("rescan").onclick = guarded(scanNetworks, "wifi-status");
 $("send").onclick = guarded(sendCredentials, "wifi-status");
 for (const id of ["name", "pop", "other"]) $(id).addEventListener("input", updateButtons);
 $("no-bluetooth").hidden = !!navigator.bluetooth;
-log("page", "2026-10-21b", navigator.userAgent);
+log("page", "2026-10-21c", navigator.userAgent);
 log("bluetooth:", !!navigator.bluetooth, "camera:", !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
     "crypto:", !!(window.crypto && crypto.subtle), "libs:", typeof nacl, typeof aesjs, typeof jsQR);
 window.addEventListener("error", (e) => log("script error:", e.message));
