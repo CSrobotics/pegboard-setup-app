@@ -236,11 +236,15 @@ function stopScan() {
 
 /* ---- step 2: Bluetooth and the security 1 session ------------------------------------------ */
 let device = null, endpoints = {}, cipher = null;
+/* The board's endpoints by characteristic UUID (16-bit part, wifi_prov_mgr's order on this firmware),
+   for a browser that cannot read the 0x2901 descriptions */
+const ENDPOINT_BY_UUID = { ff4f: "prov-ctrl", ff50: "prov-scan", ff51: "prov-session", ff52: "prov-config", ff53: "proto-ver" };
 
 async function exchange(name, data) {
   const characteristic = endpoints[name];
   if (!characteristic) throw new Error("no endpoint " + name);
-  await characteristic.writeValueWithResponse(data);
+  if (characteristic.writeValueWithResponse) await characteristic.writeValueWithResponse(data);
+  else await characteristic.writeValue(data);                 // older Web Bluetooth (some iOS browsers)
   return new Uint8Array((await characteristic.readValue()).buffer);
 }
 async function secure(name, plain) {                       // one encrypted request / answer
@@ -266,6 +270,12 @@ async function connect() {
       const description = await characteristic.getDescriptor("gatt.characteristic_user_description");
       endpoints[untext.decode(await description.readValue())] = characteristic;
     } catch (e) { log("descriptor", characteristic.uuid, e.message); }
+  }
+  if (!endpoints["prov-session"]) {                          // no descriptions: by UUID
+    for (const characteristic of await service.getCharacteristics()) {
+      const name = ENDPOINT_BY_UUID[characteristic.uuid.slice(4, 8)];
+      if (name) endpoints[name] = characteristic;
+    }
   }
   log("endpoints:", Object.keys(endpoints).join(", "));
   try { log("proto-ver:", untext.decode(await exchange("proto-ver", text.encode("---")))); } catch (e) { }
@@ -384,6 +394,11 @@ $("rescan").onclick = guarded(scanNetworks, "wifi-status");
 $("send").onclick = guarded(sendCredentials, "wifi-status");
 for (const id of ["name", "pop", "other"]) $(id).addEventListener("input", updateButtons);
 $("no-bluetooth").hidden = !!navigator.bluetooth;
+log("page", "2026-10-21b", navigator.userAgent);
+log("bluetooth:", !!navigator.bluetooth, "camera:", !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+    "crypto:", !!(window.crypto && crypto.subtle), "libs:", typeof nacl, typeof aesjs, typeof jsQR);
+window.addEventListener("error", (e) => log("script error:", e.message));
+window.addEventListener("unhandledrejection", (e) => log("unhandled:", e.reason && e.reason.message || e.reason));
 if (!navigator.mediaDevices) $("scan").disabled = true;
 updateButtons();
 </script>
