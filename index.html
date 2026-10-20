@@ -273,17 +273,17 @@ async function connect() {
   log("gatt connected");
   const service = await timed(server.getPrimaryService(SERVICE), 10000, "service");
   const characteristics = await timed(service.getCharacteristics(), 10000, "characteristics");
-  log("characteristics:", characteristics.map((c) => c.uuid.slice(4, 8)).join(" "));
+  log("characteristics:", characteristics.map((c) => c.uuid).join(" "));
   endpoints = {};
   for (const characteristic of characteristics) {           // by UUID: no descriptor reads (Bluefy hung on them)
-    const name = ENDPOINT_BY_UUID[characteristic.uuid.slice(4, 8)];
+    const name = ENDPOINT_BY_UUID[String(characteristic.uuid).toLowerCase().slice(4, 8)];   // some browsers: upper case
     if (name) endpoints[name] = characteristic;
   }
   if (!endpoints["prov-session"]) {                          // another firmware: ask the descriptions
     for (const characteristic of characteristics) {
       try {
-        const description = await timed(characteristic.getDescriptor("gatt.characteristic_user_description"), 5000, "descriptor");
-        endpoints[untext.decode(await timed(description.readValue(), 5000, "description"))] = characteristic;
+        const description = await timed(characteristic.getDescriptor("gatt.characteristic_user_description"), 2000, "descriptor");
+        endpoints[untext.decode(await timed(description.readValue(), 2000, "description"))] = characteristic;
       } catch (e) { log("descriptor", characteristic.uuid, e.message); }
     }
   }
@@ -404,7 +404,7 @@ $("rescan").onclick = guarded(scanNetworks, "wifi-status");
 $("send").onclick = guarded(sendCredentials, "wifi-status");
 for (const id of ["name", "pop", "other"]) $(id).addEventListener("input", updateButtons);
 $("no-bluetooth").hidden = !!navigator.bluetooth;
-log("page", "2026-10-21c", navigator.userAgent);
+log("page", "2026-10-21d", navigator.userAgent);
 log("bluetooth:", !!navigator.bluetooth, "camera:", !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
     "crypto:", !!(window.crypto && crypto.subtle), "libs:", typeof nacl, typeof aesjs, typeof jsQR);
 window.addEventListener("error", (e) => log("script error:", e.message));
