@@ -235,7 +235,7 @@ function stopScan() {
 }
 
 /* ---- step 2: Bluetooth and the security 1 session ------------------------------------------ */
-let device = null, endpoints = {}, cipher = null;
+let device = null, endpoints = {}, cipher = null, sentWifi = false;
 /* The board's endpoints by characteristic UUID (16-bit part, wifi_prov_mgr's order on this firmware),
    for a browser that cannot read the 0x2901 descriptions */
 const ENDPOINT_BY_UUID = { ff4f: "prov-ctrl", ff50: "prov-scan", ff51: "prov-session", ff52: "prov-config", ff53: "proto-ver" };
@@ -261,10 +261,15 @@ async function secure(name, plain) {                       // one encrypted requ
 
 async function connect() {
   const name = $("name").value.trim(), pop = $("pop").value.trim();
+  sentWifi = false;
   status("connect-status", "블루투스 장치를 고르세요...");
   device = await navigator.bluetooth.requestDevice({ filters: [{ name }], optionalServices: [SERVICE] });
   device.addEventListener("gattserverdisconnected", () => {
     log("disconnected");
+    if (sentWifi) {                                          // the board ends Bluetooth once it is on the Wi-Fi
+      status("wifi-status", "보드가 블루투스를 닫았어요. 보드 화면에서 결과를 확인하세요.", "good");
+      return;
+    }
     status("connect-status", "연결이 끊겼어요. 다시 연결해 주세요.", "bad");
     setStep("connect");
   });
@@ -356,6 +361,7 @@ async function sendCredentials() {
   const set = decode(one(decode(await secure("prov-config", encode([[1, 2], [12, encode([[1, text.encode(ssid)], [2, text.encode(password)]])]]))), 13, empty));
   if (one(set, 1, 0) !== 0) throw new Error("보드가 받지 않았어요 (" + one(set, 1, 0) + ")");
   await secure("prov-config", encode([[1, 4], [14, empty]]));          // CmdApplyConfig
+  sentWifi = true;
   status("wifi-status", "보드가 " + ssid + "에 연결하는 중...");
   for (let i = 0; i < 40; i++) {                                       // ~20 s
     await new Promise((r) => setTimeout(r, 500));
@@ -404,7 +410,7 @@ $("rescan").onclick = guarded(scanNetworks, "wifi-status");
 $("send").onclick = guarded(sendCredentials, "wifi-status");
 for (const id of ["name", "pop", "other"]) $(id).addEventListener("input", updateButtons);
 $("no-bluetooth").hidden = !!navigator.bluetooth;
-log("page", "2026-10-21d", navigator.userAgent);
+log("page", "2026-10-21e", navigator.userAgent);
 log("bluetooth:", !!navigator.bluetooth, "camera:", !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
     "crypto:", !!(window.crypto && crypto.subtle), "libs:", typeof nacl, typeof aesjs, typeof jsQR);
 window.addEventListener("error", (e) => log("script error:", e.message));
