@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PegBoard Wi-Fi 설정</title>
+<!--
+  PegBoard Wi-Fi setup over Bluetooth - a test app for the company app to come.
+
+  Speaks ESP-IDF wifi_provisioning (the "ESP BLE Provisioning" protocol) with security 1:
+  X25519 key exchange, the shared key XORed with SHA-256 of the proof of possession (PoP, in the
+  board's QR code), then one AES-256-CTR stream (IV = the board's random) for everything that
+  follows, in both directions, in order. Messages are protobuf (protocomm/proto, wifi_provisioning/
+  proto in ESP-IDF 5.3). Each endpoint is a GATT characteristic named by its 0x2901 description;
+  a request is a write, its answer a read of the same characteristic.
+
+  Needs Web Bluetooth: on an iPhone the Bluefy browser (Safari has none), on a PC Chrome / Edge.
+  Served over HTTPS by tools/ota/ota_server.py at /app/ (Web Bluetooth needs a secure page).
+-->
+<style>
+/* layout: one narrow column of steps; the step in progress is the only bright block */
+:root {
+  --bg: #f3f5f4; --surface: #ffffff; --ink: #1d2422; --muted: #5d6965; --line: #d5dcd9;
+  --accent: #0f7a5c; --accent-ink: #ffffff; --warn: #b4531c; --bad: #b3262e; --good: #0f7a5c;
+  --font: "Pretendard", "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #121615; --surface: #1b2120; --ink: #e6ecea; --muted: #94a19c; --line: #2c3633;
+    --accent: #35b58c; --accent-ink: #08130f; --warn: #e08a4f; --bad: #ef6b70; --good: #35b58c; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #121615; --surface: #1b2120; --ink: #e6ecea; --muted: #94a19c; --line: #2c3633;
+  --accent: #35b58c; --accent-ink: #08130f; --warn: #e08a4f; --bad: #ef6b70; --good: #35b58c; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg); color: var(--ink); font: 16px/1.5 var(--font);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: max(20px, env(safe-area-inset-top, 0px)) max(24px, env(safe-area-inset-bottom, 0px));
+}
+main { max-width: 480px; margin: 0 auto; display: grid; gap: 14px; }
+h1 { font-size: 22px; margin: 0; text-wrap: balance; }
+.lead { color: var(--muted); margin: 0; }
+.step { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: grid; gap: 12px; }
+.step[aria-disabled="true"] { opacity: .45; }
+.step h2 { font-size: 15px; margin: 0; letter-spacing: .02em; display: flex; gap: 8px; align-items: baseline; }
+.step h2 .n { color: var(--accent); font-variant-numeric: tabular-nums; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+button {
+  font: inherit; font-weight: 600; border: 0; border-radius: 10px; padding: 12px 16px; cursor: pointer;
+  background: var(--accent); color: var(--accent-ink);
+}
+button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+button:disabled { opacity: .5; cursor: default; }
+button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+label { font-size: 14px; color: var(--muted); display: grid; gap: 6px; }
+input {
+  font: inherit; width: 100%; padding: 11px 12px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--ink);
+}
+input.code { font-family: var(--mono); letter-spacing: .06em; }
+video { width: 100%; border-radius: 10px; background: #000; max-height: 50vh; object-fit: cover; }
+.status { font-size: 14px; color: var(--muted); }
+.status.good { color: var(--good); } .status.bad { color: var(--bad); }
+.networks { display: grid; gap: 6px; }
+.net {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px; text-align: left;
+  background: var(--bg); color: var(--ink); border: 1px solid var(--line); font-weight: 500;
+}
+.net[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.net .ssid { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.net .meta { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+details { font-size: 13px; color: var(--muted); }
+pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-all; margin: 8px 0 0;
+      max-height: 220px; overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.note { font-size: 13px; color: var(--warn); margin: 0; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.3/nacl-fast.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/aes-js/3.1.2/index.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+</head>
+<body>
+<main>
+  <h1>페그보드 Wi-Fi 설정</h1>
+  <p class="lead">보드에서 소프트웨어 업데이트 → Wi-Fi 설정을 열고 따라 하세요. 폰은 지금 Wi-Fi를 그대로 씁니다.</p>
+  <p class="note" id="no-bluetooth" hidden>이 브라우저는 블루투스를 쓸 수 없어요. 아이폰은 Bluefy 앱, PC는 Chrome에서 여세요.</p>
+
+  <section class="step" id="step-code">
+    <h2><span class="n">1</span>보드 화면의 코드</h2>
+    <div class="row">
+      <button id="scan">QR 코드 찍기</button>
+      <button class="secondary" id="stop-scan" hidden>그만 찍기</button>
+    </div>
+    <video id="video" playsinline muted hidden></video>
+    <label for="name">보드 이름 <input id="name" class="code" autocomplete="off" placeholder="PROV_PEGBOARD_XXXX"></label>
+    <label for="pop">코드 <input id="pop" class="code" autocomplete="off" placeholder="보드 화면 아래 12자"></label>
+  </section>
+
+  <section class="step" id="step-connect" aria-disabled="true">
+    <h2><span class="n">2</span>보드에 연결</h2>
+    <button id="connect" disabled>블루투스로 연결</button>
+    <div class="status" id="connect-status"></div>
+  </section>
+
+  <section class="step" id="step-wifi" aria-disabled="true">
+    <h2><span class="n">3</span>Wi-Fi 고르기</h2>
+    <div class="row"><button class="secondary" id="rescan" disabled>다시 찾기</button></div>
+    <div class="networks" id="networks"></div>
+    <label for="other">목록에 없으면 이름 직접 입력 <input id="other" autocomplete="off"></label>
+    <label for="password">비밀번호 <input id="password" type="password" autocomplete="off"></label>
+    <button id="send" disabled>보드에 보내기</button>
+    <div class="status" id="wifi-status"></div>
+  </section>
+
+  <details>
+    <summary>기록 (시험용)</summary>
+    <pre id="log"></pre>
+  </details>
+</main>
+<script>
+"use strict";
+const SERVICE = "1775244d-6b43-439b-877c-060f2d9bed07";   // wifi_prov_scheme_ble default
+const $ = (id) => document.getElementById(id);
+const text = new TextEncoder(), untext = new TextDecoder();
+
+function log(...parts) {
+  const line = parts.map((p) => (p instanceof Uint8Array ? hex(p) : String(p))).join(" ");
+  $("log").textContent += line + "\n";
+}
+const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+function status(id, message, kind) {
+  const el = $(id);
+  el.textContent = message;
+  el.className = "status" + (kind ? " " + kind : "");
+}
+
+/* ---- protobuf: just what the provisioning messages need ---------------------------------- */
+function varint(n) {
+  const out = [];
+  n = n >>> 0;
+  while (n > 127) { out.push((n & 127) | 128); n >>>= 7; }
+  out.push(n);
+  return out;
+}
+function concat(parts) {
+  const total = parts.reduce((s, p) => s + p.length, 0), out = new Uint8Array(total);
+  let at = 0;
+  for (const p of parts) { out.set(p, at); at += p.length; }
+  return out;
+}
+// fields: [[number, value]], value = integer (varint) or Uint8Array (bytes / message)
+function encode(fields) {
+  const parts = [];
+  for (const [number, value] of fields) {
+    if (value instanceof Uint8Array) {
+      parts.push(new Uint8Array([...varint((number << 3) | 2), ...varint(value.length)]), value);
+    } else {
+      parts.push(new Uint8Array([...varint(number << 3), ...varint(value)]));
+    }
+  }
+  return concat(parts);
+}
+// -> Map number -> [values]; varints as numbers, length-delimited as Uint8Array
+function decode(buffer) {
+  const fields = new Map();
+  let at = 0;
+  const read = () => {                                      // the low 32 bits (enough for every field here)
+    let shift = 0n, n = 0n;
+    for (;;) {
+      const b = buffer[at++];
+      n |= BigInt(b & 127) << shift;
+      if (!(b & 128)) return Number(BigInt.asUintN(32, n));
+      shift += 7n;
+    }
+  };
+  while (at < buffer.length) {
+    const key = read(), number = Math.floor(key / 8), wire = key & 7;
+    let value;
+    if (wire === 0) value = read();
+    else if (wire === 2) { const length = read(); value = buffer.slice(at, at + length); at += length; }
+    else if (wire === 5) { value = buffer.slice(at, at + 4); at += 4; }
+    else if (wire === 1) { value = buffer.slice(at, at + 8); at += 8; }
+    else throw new Error("protobuf wire type " + wire);
+    if (!fields.has(number)) fields.set(number, []);
+    fields.get(number).push(value);
+  }
+  return fields;
+}
+const one = (fields, number, fallback) => (fields.has(number) ? fields.get(number)[0] : fallback);
+const signed = (n) => (n >= 2 ** 31 ? n - 2 ** 32 : n);      // int32: a negative one is sign-extended to 64 bits
+const empty = new Uint8Array(0);
+
+/* ---- step 1: the code ----------------------------------------------------------------------- */
+let stream = null, scanTimer = null;
+function takeCode(raw) {
+  try {
+    const qr = JSON.parse(raw);
+    if (qr.name) $("name").value = qr.name;
+    if (qr.pop) $("pop").value = qr.pop;
+    log("QR", raw);
+    stopScan();
+    updateButtons();
+    return true;
+  } catch (e) { return false; }
+}
+async function startScan() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+  } catch (e) {
+    log("camera:", e.message);
+    status("connect-status", "카메라를 쓸 수 없어요. 보드 이름과 코드를 직접 넣어 주세요.", "bad");
+    return;
+  }
+  const video = $("video"), canvas = document.createElement("canvas"), context = canvas.getContext("2d", { willReadFrequently: true });
+  video.srcObject = stream; video.hidden = false; $("stop-scan").hidden = false; $("scan").hidden = true;
+  await video.play();
+  scanTimer = setInterval(() => {
+    if (!video.videoWidth) return;
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    context.drawImage(video, 0, 0);
+    const found = jsQR(context.getImageData(0, 0, canvas.width, canvas.height).data, canvas.width, canvas.height);
+    if (found && found.data) takeCode(found.data);
+  }, 250);
+}
+function stopScan() {
+  clearInterval(scanTimer);
+  if (stream) stream.getTracks().forEach((t) => t.stop());
+  stream = null;
+  $("video").hidden = true; $("stop-scan").hidden = true; $("scan").hidden = false;
+}
+
+/* ---- step 2: Bluetooth and the security 1 session ------------------------------------------ */
+let device = null, endpoints = {}, cipher = null;
+
+async function exchange(name, data) {
+  const characteristic = endpoints[name];
+  if (!characteristic) throw new Error("no endpoint " + name);
+  await characteristic.writeValueWithResponse(data);
+  return new Uint8Array((await characteristic.readValue()).buffer);
+}
+async function secure(name, plain) {                       // one encrypted request / answer
+  const answer = await exchange(name, cipher.encrypt(plain));
+  return cipher.decrypt(answer);
+}
+
+async function connect() {
+  const name = $("name").value.trim(), pop = $("pop").value.trim();
+  status("connect-status", "블루투스 장치를 고르세요...");
+  device = await navigator.bluetooth.requestDevice({ filters: [{ name }], optionalServices: [SERVICE] });
+  device.addEventListener("gattserverdisconnected", () => {
+    log("disconnected");
+    status("connect-status", "연결이 끊겼어요. 다시 연결해 주세요.", "bad");
+    setStep("connect");
+  });
+  status("connect-status", "연결하는 중...");
+  const server = await device.gatt.connect();
+  const service = await server.getPrimaryService(SERVICE);
+  endpoints = {};
+  for (const characteristic of await service.getCharacteristics()) {
+    try {
+      const description = await characteristic.getDescriptor("gatt.characteristic_user_description");
+      endpoints[untext.decode(await description.readValue())] = characteristic;
+    } catch (e) { log("descriptor", characteristic.uuid, e.message); }
+  }
+  log("endpoints:", Object.keys(endpoints).join(", "));
+  try { log("proto-ver:", untext.decode(await exchange("proto-ver", text.encode("---")))); } catch (e) { }
+
+  status("connect-status", "보안 연결을 만드는 중...");
+  const secret = nacl.randomBytes(32), clientKey = nacl.scalarMult.base(secret);
+  // SessionData { sec_ver = 1, sec1 { msg = Command0, sc0 { client_pubkey } } }
+  const cmd0 = encode([[2, 1], [11, encode([[1, 0], [20, encode([[1, clientKey]])]])]]);
+  const resp0 = decode(one(decode(one(decode(await exchange("prov-session", cmd0)), 11, empty)), 21, empty));
+  const deviceKey = one(resp0, 2, empty), deviceRandom = one(resp0, 3, empty);
+  if (one(resp0, 1, 0) !== 0 || deviceKey.length !== 32 || deviceRandom.length !== 16) throw new Error("세션 응답이 이상해요");
+  const shared = nacl.scalarMult(secret, deviceKey);
+  const popHash = new Uint8Array(await crypto.subtle.digest("SHA-256", text.encode(pop)));
+  const key = shared.map((b, i) => b ^ popHash[i]);
+  cipher = new aesjs.ModeOfOperation.ctr(key, new aesjs.Counter(deviceRandom));   // one stream, both ways
+  const cmd1 = encode([[2, 1], [11, encode([[1, 2], [22, encode([[2, cipher.encrypt(deviceKey)]])]])]]);
+  const resp1 = decode(one(decode(one(decode(await exchange("prov-session", cmd1)), 11, empty)), 23, empty));
+  const check = cipher.decrypt(one(resp1, 3, empty));
+  if (one(resp1, 1, 0) !== 0 || hex(check) !== hex(clientKey)) throw new Error("코드가 맞지 않아요 (보드 화면의 코드를 확인)");
+  log("session ok");
+  status("connect-status", "연결됐어요", "good");
+  setStep("wifi");
+  await scanNetworks();
+}
+
+/* ---- step 3: networks, credentials, result ------------------------------------------------ */
+const AUTH = ["열림", "WEP", "WPA", "WPA2", "WPA/WPA2", "WPA2 기업", "WPA3", "WPA2/WPA3"];
+let chosen = null;
+async function scanNetworks() {
+  status("wifi-status", "보드가 Wi-Fi를 찾는 중...");
+  $("networks").textContent = "";
+  // WiFiScanPayload { msg = CmdScanStart, cmd_scan_start { blocking = 1, period_ms = 120 } }
+  await secure("prov-scan", encode([[1, 0], [10, encode([[1, 1], [4, 120]])]]));
+  const statusAnswer = decode(await secure("prov-scan", encode([[1, 2], [12, empty]])));
+  const count = one(decode(one(statusAnswer, 13, empty)), 2, 0);
+  const found = [];
+  for (let start = 0; start < count; start += 4) {
+    const answer = decode(await secure("prov-scan", encode([[1, 4], [14, encode([[1, start], [2, Math.min(4, count - start)]])]])));
+    for (const entry of (decode(one(answer, 15, empty)).get(1) || [])) {
+      const e = decode(entry);
+      found.push({ ssid: untext.decode(one(e, 1, empty)), rssi: signed(one(e, 3, 0)), auth: one(e, 5, 0) });
+    }
+  }
+  const best = new Map();
+  for (const n of found) if (n.ssid && (!best.has(n.ssid) || best.get(n.ssid).rssi < n.rssi)) best.set(n.ssid, n);
+  const list = [...best.values()].sort((a, b) => b.rssi - a.rssi);
+  for (const n of list) {
+    const button = document.createElement("button");
+    button.className = "net"; button.type = "button"; button.setAttribute("aria-pressed", "false");
+    button.innerHTML = '<span class="ssid"></span><span class="meta"></span>';
+    button.querySelector(".ssid").textContent = n.ssid;
+    button.querySelector(".meta").textContent = AUTH[n.auth] + " · " + n.rssi + " dBm";
+    button.onclick = () => {
+      chosen = n.ssid;
+      for (const b of document.querySelectorAll(".net")) b.setAttribute("aria-pressed", String(b === button));
+      updateButtons();
+    };
+    $("networks").appendChild(button);
+  }
+  status("wifi-status", list.length ? "Wi-Fi " + list.length + "개를 찾았어요" : "찾은 Wi-Fi가 없어요. 다시 찾기를 눌러 보세요.");
+  log("networks:", list.map((n) => n.ssid + " " + n.rssi).join(", "));
+}
+
+async function sendCredentials() {
+  const ssid = $("other").value.trim() || chosen, password = $("password").value;
+  status("wifi-status", "보드에 보내는 중...");
+  // WiFiConfigPayload { msg = CmdSetConfig, cmd_set_config { ssid, passphrase } }
+  const set = decode(one(decode(await secure("prov-config", encode([[1, 2], [12, encode([[1, text.encode(ssid)], [2, text.encode(password)]])]]))), 13, empty));
+  if (one(set, 1, 0) !== 0) throw new Error("보드가 받지 않았어요 (" + one(set, 1, 0) + ")");
+  await secure("prov-config", encode([[1, 4], [14, empty]]));          // CmdApplyConfig
+  status("wifi-status", "보드가 " + ssid + "에 연결하는 중...");
+  for (let i = 0; i < 40; i++) {                                       // ~20 s
+    await new Promise((r) => setTimeout(r, 500));
+    const reply = decode(one(decode(await secure("prov-config", encode([[1, 0], [10, empty]]))), 11, empty));
+    const state = one(reply, 2, 1);
+    if (state === 0) {
+      const ip = untext.decode(one(decode(one(reply, 11, empty)), 1, empty));
+      status("wifi-status", "연결됐어요" + (ip ? " (" + ip + ")" : "") + ". 보드 화면을 확인하세요.", "good");
+      log("connected", ip);
+      return;
+    }
+    if (state === 2 || state === 3) {
+      const reason = one(reply, 10, 0);
+      status("wifi-status", reason === 0 ? "비밀번호가 맞지 않아요. 다시 넣고 보내 주세요." : "그 Wi-Fi를 찾지 못했어요.", "bad");
+      log("failed, reason", reason);
+      return;
+    }
+  }
+  status("wifi-status", "시간이 다 됐어요. 보드 화면을 확인하세요.", "bad");
+}
+
+/* ---- page ------------------------------------------------------------------------------------ */
+function setStep(step) {
+  $("step-connect").setAttribute("aria-disabled", String(step === "code"));
+  $("step-wifi").setAttribute("aria-disabled", String(step !== "wifi"));
+  updateButtons();
+}
+function updateButtons() {
+  const haveCode = $("name").value.trim().startsWith("PROV_") && $("pop").value.trim().length > 0;
+  $("step-connect").setAttribute("aria-disabled", String(!haveCode));
+  $("connect").disabled = !haveCode || !navigator.bluetooth;
+  const wifiOpen = $("step-wifi").getAttribute("aria-disabled") === "false";
+  $("rescan").disabled = !wifiOpen;
+  $("send").disabled = !wifiOpen || !($("other").value.trim() || chosen);
+}
+function guarded(fn, where) {
+  return async () => {
+    try { await fn(); }
+    catch (e) { log("error:", e.message); status(where, e.message, "bad"); }
+  };
+}
+$("scan").onclick = startScan;
+$("stop-scan").onclick = stopScan;
+$("connect").onclick = guarded(connect, "connect-status");
+$("rescan").onclick = guarded(scanNetworks, "wifi-status");
+$("send").onclick = guarded(sendCredentials, "wifi-status");
+for (const id of ["name", "pop", "other"]) $(id).addEventListener("input", updateButtons);
+$("no-bluetooth").hidden = !!navigator.bluetooth;
+if (!navigator.mediaDevices) $("scan").disabled = true;
+updateButtons();
+</script>
+</body>
+</html>
