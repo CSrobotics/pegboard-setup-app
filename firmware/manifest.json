@@ -1,6 +1,6 @@
 {
   "firmware": {
-    "version": "0.6.5",
+    "version": "0.6.6",
     "url": "https://csrobotics.github.io/pegboard-setup-app/firmware/pegboard_v2_main.bin"
   },
   "side": {
