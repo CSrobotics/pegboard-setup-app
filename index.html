@@ -197,16 +197,25 @@ const empty = new Uint8Array(0);
 
 /* ---- step 1: the code ----------------------------------------------------------------------- */
 let stream = null, scanTimer = null;
+/* The board's QR code: this page's address with "#name=...&pop=..." (the phone camera opens it),
+   or the ESP BLE Provisioning app's JSON of older firmware */
+function parseCode(raw) {
+  const hash = raw.indexOf("#");
+  if (hash >= 0) {
+    const fields = new URLSearchParams(raw.slice(hash + 1));
+    if (fields.get("name") || fields.get("pop")) return { name: fields.get("name"), pop: fields.get("pop") };
+  }
+  try { return JSON.parse(raw); } catch (e) { return null; }
+}
 function takeCode(raw) {
-  try {
-    const qr = JSON.parse(raw);
-    if (qr.name) $("name").value = qr.name;
-    if (qr.pop) $("pop").value = qr.pop;
-    log("QR", raw);
-    stopScan();
-    updateButtons();
-    return true;
-  } catch (e) { return false; }
+  const qr = parseCode(raw);
+  if (!qr || !(qr.name || qr.pop)) return false;
+  if (qr.name) $("name").value = qr.name;
+  if (qr.pop) $("pop").value = qr.pop;
+  log("QR", raw);
+  stopScan();
+  updateButtons();
+  return true;
 }
 async function startScan() {
   try {
@@ -410,12 +419,15 @@ $("rescan").onclick = guarded(scanNetworks, "wifi-status");
 $("send").onclick = guarded(sendCredentials, "wifi-status");
 for (const id of ["name", "pop", "other"]) $(id).addEventListener("input", updateButtons);
 $("no-bluetooth").hidden = !!navigator.bluetooth;
-log("page", "2026-10-21e", navigator.userAgent);
+log("page", "2026-10-29a", navigator.userAgent);
 log("bluetooth:", !!navigator.bluetooth, "camera:", !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
     "crypto:", !!(window.crypto && crypto.subtle), "libs:", typeof nacl, typeof aesjs, typeof jsQR);
 window.addEventListener("error", (e) => log("script error:", e.message));
 window.addEventListener("unhandledrejection", (e) => log("unhandled:", e.reason && e.reason.message || e.reason));
 if (!navigator.mediaDevices) $("scan").disabled = true;
+if (location.hash.length > 1 && takeCode(location.hash)) {   // opened from the board's QR code: the code is in
+  history.replaceState(null, "", location.pathname);          // not kept in the address bar / history
+}
 updateButtons();
 </script>
 </body>
